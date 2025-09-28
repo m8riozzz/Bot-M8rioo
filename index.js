@@ -1,101 +1,267 @@
-// Importation des classes nécessaires de discord.js
-const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } = require('discord.js');
-// Importation de la bibliothèque dotenv pour charger les variables d'environnement
+const { 
+    Client, 
+    GatewayIntentBits, 
+    ActionRowBuilder, 
+    ButtonBuilder, 
+    ButtonStyle, 
+    ChannelType,
+    PermissionsBitField,
+    Events 
+} = require('discord.js');
+
+// Load environment variables from .env file
 require('dotenv').config();
 
-// IDs des rôles à modifier. REMPLACEZ CES VALEURS par les vôtres.
-const ON_DUTY_ROLE_ID = 'VOTRE_ID_DU_ROLE_ON_DUTY';
-const OFF_DUTY_ROLE_ID = 'VOTRE_ID_DU_ROLE_OFF_DUTY';
+// --- CONFIGURATION ---
+// Variables are now loaded from process.env
+const TOKEN = process.env.DISCORD_TOKEN;          // 🔒 Bot token
+const GUILD_ID = process.env.GUILD_ID;        // ⚙️ Server ID
+const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID; // 📣 ID of the role to mention (e.g., 'Mod', 'Helper')
+const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID; // 📁 ID of the category to create tickets in
+const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID; // 📌 ID of the channel where the panel should be posted
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; // 📝 ID of the channel to send ticket transcripts/logs to
 
-// Création d'une nouvelle instance du client Discord avec les intents nécessaires
-const client = new Client({
-intents: [
-GatewayIntentBits.Guilds,
-GatewayIntentBits.GuildMembers, // Nécessaire pour gérer les rôles
-GatewayIntentBits.GuildMessages,
-GatewayIntentBits.MessageContent,
-GatewayIntentBits.GuildModeration // Nécessaire pour la gestion des rôles de certains bots
-],
-partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+// Custom IDs for the buttons (must be unique)
+const CUSTOM_ID_TICKET = 'create_support_ticket';
+const CUSTOM_ID_CLOSE = 'close_support_ticket';
+
+// --- BOT SETUP ---
+// We need 'Guilds', 'GuildMembers', and 'MessageContent' (for fetching logs/transcripts) intents
+const client = new Client({ 
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.MessageContent 
+    ] 
 });
 
-// Événement 'ready' : s'exécute une seule fois lorsque le bot est prêt
-client.once('ready', () => {
-console.log(`Bot prêt ! Connecté en tant que ${client.user.tag}`);
+// --- BOT EVENTS ---
 
-// --- ENVOI DU MESSAGE AVEC LES BOUTONS AU DÉMARRAGE DU BOT ---
-// Vous pouvez commenter ce bloc si vous préférez envoyer le message manuellement avec une commande.
-const channelId = 'ID_DU_CANAL_DE_SERVICE'; // Remplacez par l'ID du canal où le message doit être envoyé
+// 1. Bot Ready Event
+client.once(Events.ClientReady, async c => {
+    console.log(`✅ Ready! Logged in as ${c.user.tag}`);
+    
+    // --- Auto-Post Panel Logic ---
+    try {
+        // Validation check for mandatory IDs
+        if (!PANEL_CHANNEL_ID || !client.channels.cache.get(PANEL_CHANNEL_ID)) {
+             return console.error(`❌ Panel channel ID missing or invalid. Check PANEL_CHANNEL_ID in .env.`);
+        }
 
-const targetChannel = client.channels.cache.get(channelId);
-if (targetChannel) {
-sendDutyMessage(targetChannel);
-} else {
-console.error(`Le canal avec l'ID ${channelId} n'a pas été trouvé.`);
-}
+        // Fetch the channel where the support panel should be posted
+        const panelChannel = await client.channels.fetch(PANEL_CHANNEL_ID);
+
+        // Basic validation
+        if (!panelChannel || panelChannel.type !== ChannelType.GuildText) {
+            return console.error(`❌ Panel channel not found or is not a text channel. Check PANEL_CHANNEL_ID.`);
+        }
+
+        // Create the "Support" button
+        const ticketButton = new ButtonBuilder()
+            .setCustomId(CUSTOM_ID_TICKET)
+            .setLabel('Create Ticket')
+            .setStyle(ButtonStyle.Success)
+            .setEmoji('🎫');
+
+        // Create an action row
+        const row = new ActionRowBuilder().addComponents(ticketButton);
+
+        // Send the initial support message with the button to the specified channel
+        await panelChannel.send({
+            content: '📌 **SUPPORT PANEL** 📌\n\nNeed help? Click the button below to open a support ticket!',
+            components: [row]
+        });
+
+        console.log(`✅ Successfully posted support panel to channel ID: ${PANEL_CHANNEL_ID}`);
+
+    } catch (error) {
+        console.error('❌ Failed during auto-post routine (Is GUILD_ID correct and is the bot in the server?):', error);
+    }
 });
 
-// Événement 'interactionCreate' : gère toutes les interactions (boutons, commandes, etc.)
-client.on('interactionCreate', async interaction => {
-// S'assurer que l'interaction est un clic de bouton
-if (!interaction.isButton()) return;
+// 2. Interaction Handler (Button Clicks)
+client.on(Events.InteractionCreate, async interaction => {
+    // Check if the interaction is a button press
+    if (!interaction.isButton()) return;
+    
+    const guild = interaction.guild;
+    const user = interaction.user;
+    const supportRole = guild.roles.cache.get(SUPPORT_ROLE_ID);
 
-const member = interaction.member;
+    if (!supportRole) {
+        // Only return an error if a ticket or closure is attempted without the role
+        if (interaction.customId === CUSTOM_ID_TICKET || interaction.customId === CUSTOM_ID_CLOSE) {
+            await interaction.reply({ 
+                content: '❌ Configuration Error: Support role not found. Please check SUPPORT_ROLE_ID in .env.', 
+                ephemeral: true 
+            });
+        }
+        return;
+    }
 
-try {
-// Logique pour le bouton "On Duty"
-if (interaction.customId === 'on_duty_button') {
-await member.roles.add(ON_DUTY_ROLE_ID);
-await member.roles.remove(OFF_DUTY_ROLE_ID);
 
-// Réponse éphémère (visible uniquement par l'utilisateur)
-await interaction.reply({ content: '✅ Vous êtes maintenant **On Duty**.', ephemeral: true });
+    // Button Interaction Handler (Ticket Creation)
+    if (interaction.customId === CUSTOM_ID_TICKET) {
+        await interaction.deferReply({ ephemeral: true }); // Show "Bot is thinking..." privately
 
-// Logique pour le bouton "Off Duty"
-} else if (interaction.customId === 'off_duty_button') {
-await member.roles.add(OFF_DUTY_ROLE_ID);
-await member.roles.remove(ON_DUTY_ROLE_ID);
+        // Check if the user already has a ticket open (basic check)
+        const existingTicket = guild.channels.cache.find(c => 
+            // Checks for a channel name prefixed with 'ticket-' and checks if it's in the correct category
+            c.name.startsWith('ticket-') &&
+            c.name.includes(user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')) &&
+            c.parentId === TICKET_CATEGORY_ID
+        );
 
-await interaction.reply({ content: '💤 Vous êtes maintenant **Off Duty**.', ephemeral: true });
-}
-} catch (error) {
-console.error('Erreur lors de la modification des rôles:', error);
-await interaction.reply({ content: '❌ Une erreur est survenue lors de la modification de vos rôles. Assurez-vous d\'avoir les permissions nécessaires.', ephemeral: true });
-}
+        if (existingTicket) {
+            return interaction.editReply({ 
+                content: `You already have a ticket open: ${existingTicket}`,
+                ephemeral: true
+            });
+        }
+
+        try {
+            // Create the new channel (ticket)
+            const ticketChannel = await guild.channels.create({
+                name: `ticket-${user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+                type: ChannelType.GuildText,
+                parent: TICKET_CATEGORY_ID,
+                permissionOverwrites: [
+                    {
+                        id: guild.id, // @everyone role
+                        deny: [PermissionsBitField.Flags.ViewChannel],
+                    },
+                    {
+                        id: user.id, // The user who clicked the button
+                        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+                    },
+                    {
+                        id: supportRole.id, // The support staff role ID
+                        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+                    },
+                ],
+            });
+
+            // Create the "Close Ticket" button
+            const closeButton = new ButtonBuilder()
+                .setCustomId(CUSTOM_ID_CLOSE)
+                .setLabel('Close Ticket')
+                .setStyle(ButtonStyle.Danger) // Red button for closing
+                .setEmoji('🔒');
+
+            const closeRow = new ActionRowBuilder().addComponents(closeButton);
+
+            // Send a welcome message in the new ticket channel
+            ticketChannel.send({
+                content: `${user}, ${supportRole} \nWelcome to your support ticket! Please explain your issue here.`,
+                components: [closeRow] // Include the close button
+            });
+
+            // Inform the user the ticket was created
+            await interaction.editReply({ 
+                content: `Your support ticket has been created: ${ticketChannel}`, 
+                ephemeral: true 
+            });
+
+        } catch (error) {
+            console.error('Ticket creation error (Check TICKET_CATEGORY_ID and bot permissions):', error);
+            await interaction.editReply({ 
+                content: 'There was an error creating your ticket. Please contact an administrator.', 
+                ephemeral: true 
+            });
+        }
+    }
+
+    // Button Interaction Handler (Ticket Closure and Logging)
+    else if (interaction.customId === CUSTOM_ID_CLOSE) {
+        // Defer the reply publicly since the process (fetching logs, sending file) takes time
+        await interaction.deferReply({ ephemeral: false }); 
+
+        const channel = interaction.channel;
+        const logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
+
+        // Check 1: Ensure it's a ticket channel and the user has permission to close it.
+        const isTicketCreator = channel.name.includes(user.username.toLowerCase().replace(/[^a-z0-9]/g, '-'));
+        const isSupportStaff = interaction.member.roles.cache.has(SUPPORT_ROLE_ID);
+        
+        if (channel.parentId !== TICKET_CATEGORY_ID || (!isTicketCreator && !isSupportStaff)) {
+            return interaction.editReply({ 
+                content: 'You do not have permission to close this ticket.',
+                ephemeral: true
+            });
+        }
+
+
+        // Check 2: Ensure the log channel exists
+        if (!logChannel || logChannel.type !== ChannelType.GuildText) {
+            await interaction.editReply(`❌ Error: Log channel not found or incorrectly configured (Check LOG_CHANNEL_ID). Cannot save transcript. Deleting channel in 5 seconds...`);
+            console.error('❌ Log channel issue. Check LOG_CHANNEL_ID.');
+            // Proceed to delete the ticket anyway
+            return setTimeout(() => channel.delete().catch(e => console.error('Error deleting channel:', e)), 5000);
+        }
+
+        await interaction.editReply(`Ticket closed by ${user.tag}. Generating transcript...`);
+
+        // --- Fetch and Format Transcript ---
+        let transcript = `TICKET TRANSCRIPT: ${channel.name}\nClosed by: ${user.tag}\nDate: ${new Date().toISOString()}\n\n--- MESSAGES ---\n\n`;
+
+        // Fetch messages (fetching all messages by looping up to the limit of 1000)
+        let lastId;
+        let messagesArray = [];
+        while (true) {
+            // Fetch messages, up to 100 at a time, or from a specific message ID if in a loop
+            const messages = await channel.messages.fetch({ limit: 100, before: lastId, cache: false });
+            messagesArray.push(...Array.from(messages.values()));
+            
+            // If fewer than 100 messages were retrieved, we've reached the start of the channel
+            if (messages.size !== 100) break;
+            
+            // Set the last message ID to continue fetching from
+            lastId = messages.last().id;
+        }
+
+        // Reverse the array to show messages in chronological order (oldest first)
+        messagesArray.reverse();
+
+
+        for (const msg of messagesArray) {
+            // Format each message line
+            let logLine = `[${new Date(msg.createdTimestamp).toLocaleString()}] ${msg.author.tag}: ${msg.content}\n`;
+            
+            // Add attachments if any exist
+            if (msg.attachments.size > 0) {
+                logLine += `    [Attachment(s): ${msg.attachments.map(a => a.url).join(', ')}]\n`;
+            }
+            transcript += logLine;
+        }
+
+        // --- Save Log (Transcript) ---
+        
+        // 1. Send the transcript as a file to the log channel
+        const attachment = Buffer.from(transcript, 'utf-8');
+        // Extract the username part from 'ticket-username'
+        const originalCreator = channel.name.split('-')[1] ? channel.name.split('-')[1].replace(/-/g, ' ') : 'Unknown User'; 
+        
+        await logChannel.send({
+            content: `🔒 Transcript for **${channel.name}**\n*Creator:* \`${originalCreator}\`\n*Closed by:* ${user}`,
+            files: [{
+                attachment: attachment,
+                name: `${channel.name}_transcript.txt`
+            }]
+        });
+
+        // 2. Final closure message and channel deletion
+        await interaction.channel.send(`Transcript saved successfully. This channel will be deleted in 5 seconds...`);
+        
+        // Delete the channel after a short delay
+        setTimeout(() => {
+            channel.delete()
+                .then(() => console.log(`Deleted ticket channel: ${channel.name}`))
+                .catch(e => console.error('Error deleting channel (Check bot permissions):', e));
+        }, 5000);
+        
+
+    }
 });
 
-/**
-* Crée et envoie le message avec les boutons de service.
-* @param {import('discord.js').TextChannel} channel Le canal où envoyer le message.
-*/
-async function sendDutyMessage(channel) {
-const embed = new EmbedBuilder()
-.setTitle('Statut de service du Staff')
-.setDescription('Utilisez les boutons ci-dessous pour changer votre statut de service (`On Duty` ou `Off Duty`).')
-.setColor('#0099ff');
-
-const onDutyButton = new ButtonBuilder()
-.setCustomId('on_duty_button')
-.setLabel('On Duty')
-.setStyle(ButtonStyle.Success)
-.setEmoji('🟢');
-
-const offDutyButton = new ButtonBuilder()
-.setCustomId('off_duty_button')
-.setLabel('Off Duty')
-.setStyle(ButtonStyle.Danger)
-.setEmoji('🔴');
-
-const row = new ActionRowBuilder()
-.addComponents(onDutyButton, offDutyButton);
-
-try {
-await channel.send({ embeds: [embed], components: [row] });
-} catch (error) {
-console.error('Impossible d\'envoyer le message de service:', error);
-}
-}
-
-// Connexion du bot à Discord
-client.login(process.env.DISCORD_TOKEN);
-
+// --- LOGIN ---
+client.login(TOKEN);
