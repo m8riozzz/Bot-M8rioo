@@ -14,19 +14,19 @@ require('dotenv').config();
 
 // --- CONFIGURATION ---
 // Variables are now loaded from process.env
-const TOKEN = process.env.DISCORD_TOKEN;          // 🔒 Bot token
-const GUILD_ID = process.env.GUILD_ID;        // ⚙️ Server ID
-const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID; // 📣 ID of the role to mention (e.g., 'Mod', 'Helper')
-const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID; // 📁 ID of the category to create tickets in
-const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID; // 📌 ID of the channel where the panel should be posted
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; // 📝 ID of the channel to send ticket transcripts/logs to
+const TOKEN = process.env.DISCORD_TOKEN;          // Bot token
+const GUILD_ID = process.env.GUILD_ID;        // Server ID
+const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID; // ID of the role to mention (e.g., 'Mod', 'Helper')
+const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID; // ID of the category to create tickets in
+const PANEL_CHANNEL_ID = process.env.PANEL_CHANNEL_ID; // ID of the channel where the panel should be posted
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; // ID of the channel to send ticket transcripts/logs to
 
 // Custom IDs for the buttons (must be unique)
 const CUSTOM_ID_TICKET = 'create_support_ticket';
 const CUSTOM_ID_CLOSE = 'close_support_ticket';
 
 // --- BOT SETUP ---
-// We need 'Guilds', 'GuildMembers', and 'MessageContent' (for fetching logs/transcripts) intents
+// Required intents: Guilds, GuildMembers, and MessageContent (for fetching logs/transcripts)
 const client = new Client({ 
     intents: [
         GatewayIntentBits.Guilds, 
@@ -37,15 +37,14 @@ const client = new Client({
 
 // --- BOT EVENTS ---
 
-// 1. Bot Ready Event
+// 1. Bot Ready Event (Auto-Post Panel)
 client.once(Events.ClientReady, async c => {
     console.log(`✅ Ready! Logged in as ${c.user.tag}`);
     
-    // --- Auto-Post Panel Logic ---
     try {
         // Validation check for mandatory IDs
-        if (!PANEL_CHANNEL_ID || !client.channels.cache.get(PANEL_CHANNEL_ID)) {
-             return console.error(`❌ Panel channel ID missing or invalid. Check PANEL_CHANNEL_ID in .env.`);
+        if (!PANEL_CHANNEL_ID) {
+             return console.error(`❌ Panel channel ID missing. Check PANEL_CHANNEL_ID in .env.`);
         }
 
         // Fetch the channel where the support panel should be posted
@@ -100,13 +99,12 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
 
-    // Button Interaction Handler (Ticket Creation)
+    // --- Ticket Creation Handler ---
     if (interaction.customId === CUSTOM_ID_TICKET) {
         await interaction.deferReply({ ephemeral: true }); // Show "Bot is thinking..." privately
 
         // Check if the user already has a ticket open (basic check)
         const existingTicket = guild.channels.cache.find(c => 
-            // Checks for a channel name prefixed with 'ticket-' and checks if it's in the correct category
             c.name.startsWith('ticket-') &&
             c.name.includes(user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')) &&
             c.parentId === TICKET_CATEGORY_ID
@@ -171,7 +169,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 
-    // Button Interaction Handler (Ticket Closure and Logging)
+    // --- Ticket Closure and Logging Handler ---
     else if (interaction.customId === CUSTOM_ID_CLOSE) {
         // Defer the reply publicly since the process (fetching logs, sending file) takes time
         await interaction.deferReply({ ephemeral: false }); 
@@ -180,6 +178,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
 
         // Check 1: Ensure it's a ticket channel and the user has permission to close it.
+        // A user can close the ticket if they are the creator OR if they have the support role.
         const isTicketCreator = channel.name.includes(user.username.toLowerCase().replace(/[^a-z0-9]/g, '-'));
         const isSupportStaff = interaction.member.roles.cache.has(SUPPORT_ROLE_ID);
         
@@ -208,14 +207,11 @@ client.on(Events.InteractionCreate, async interaction => {
         let lastId;
         let messagesArray = [];
         while (true) {
-            // Fetch messages, up to 100 at a time, or from a specific message ID if in a loop
             const messages = await channel.messages.fetch({ limit: 100, before: lastId, cache: false });
             messagesArray.push(...Array.from(messages.values()));
             
-            // If fewer than 100 messages were retrieved, we've reached the start of the channel
             if (messages.size !== 100) break;
             
-            // Set the last message ID to continue fetching from
             lastId = messages.last().id;
         }
 
@@ -224,10 +220,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
 
         for (const msg of messagesArray) {
-            // Format each message line
             let logLine = `[${new Date(msg.createdTimestamp).toLocaleString()}] ${msg.author.tag}: ${msg.content}\n`;
             
-            // Add attachments if any exist
             if (msg.attachments.size > 0) {
                 logLine += `    [Attachment(s): ${msg.attachments.map(a => a.url).join(', ')}]\n`;
             }
